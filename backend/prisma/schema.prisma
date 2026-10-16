@@ -1,0 +1,414 @@
+// Fase 1: auth (User, RefreshToken).
+// Fase 2: conteúdo (Language → Course → Module → Lesson/Exercise) e progresso.
+// Assessment/Project/Achievement continuam para as fases seguintes, junto com
+// os endpoints e telas que as consomem.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  STUDENT
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  name          String
+  role          UserRole  @default(STUDENT)
+
+  // Gamificação (Fase 6) — direto no User porque é sempre lido junto com o
+  // perfil (dashboard, header); não justifica uma tabela 1:1 separada.
+  xp               Int       @default(0)
+  currentStreak    Int       @default(0)
+  longestStreak    Int       @default(0)
+  lastActivityDate DateTime?
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  refreshTokens      RefreshToken[]
+  exerciseProgress   UserExerciseProgress[]
+  assessmentAttempts AssessmentAttempt[]
+  skills             UserSkill[]
+  codeExecutions     CodeExecution[]
+  projectProgress    ProjectProgress[]
+  achievements       UserAchievement[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  tokenHash  String    @unique
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ── Fase 2: conteúdo ────────────────────────────────────────────────
+
+model Language {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  name        String
+  description String
+  createdAt   DateTime @default(now())
+
+  courses             Course[]
+  skills              Skill[]
+  assessmentQuestions AssessmentQuestion[]
+  assessmentAttempts  AssessmentAttempt[]
+  projects            Project[]
+
+  @@map("languages")
+}
+
+model Course {
+  id          String   @id @default(uuid())
+  languageId  String
+  language    Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  slug        String
+  title       String
+  description String
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  modules Module[]
+
+  @@unique([languageId, slug])
+  @@map("courses")
+}
+
+model Module {
+  id          String   @id @default(uuid())
+  courseId    String
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  slug        String
+  title       String
+  description String
+  order       Int      @default(0)
+
+  // Critérios de conclusão do módulo (item 14 da spec).
+  minMasteryPercent Int @default(70)
+  minExercises      Int @default(5)
+
+  createdAt DateTime @default(now())
+
+  lessons   Lesson[]
+  exercises Exercise[]
+
+  @@unique([courseId, slug])
+  @@map("modules")
+}
+
+model Lesson {
+  id       String @id @default(uuid())
+  moduleId String
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  title    String
+  content  String // Markdown. Conteúdo tratado como dado, não hardcoded na UI.
+  order    Int    @default(0)
+
+  @@map("lessons")
+}
+
+enum ExerciseType {
+  MULTIPLE_CHOICE
+  OUTPUT_PREDICTION
+}
+
+enum ExerciseDifficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model Exercise {
+  id         String             @id @default(uuid())
+  moduleId   String
+  module     Module             @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  type       ExerciseType
+  difficulty ExerciseDifficulty @default(EASY)
+  order      Int                @default(0)
+
+  prompt      String
+  starterCode String? // exibido no editor quando fizer sentido (ex: previsão de saída)
+  // Para MULTIPLE_CHOICE: [{ id, text }]. Para OUTPUT_PREDICTION: não usado.
+  options       Json?
+  correctAnswer String // id da opção correta OU saída esperada (trim + comparação exata)
+  explanation   String
+  hint          String?
+
+  createdAt DateTime @default(now())
+
+  userProgress UserExerciseProgress[]
+
+  @@map("exercises")
+}
+
+// ── Progresso ───────────────────────────────────────────────────────
+
+model UserExerciseProgress {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exerciseId    String
+  exercise      Exercise  @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+  solved        Boolean   @default(false)
+  attempts      Int       @default(0)
+  lastAnswer    String?
+  lastAttemptAt DateTime?
+
+  @@unique([userId, exerciseId])
+  @@index([userId])
+  @@map("user_exercise_progress")
+}
+
+// ── Fase 3: diagnóstico adaptativo ────────────────────────────────────
+//
+// Skill = competência avaliável (ex.: "Estruturas de Controle"). Cada Skill
+// tem um `tier` (1 = fundamentos, 2 = intermediário, 3 = avançado) — o
+// diagnóstico percorre os tiers em ordem e para cedo se o usuário for mal
+// num tier inteiro, em vez de aplicar todas as perguntas sempre (item 8: ser
+// adaptativo de verdade, não um formulário fixo).
+
+model Skill {
+  id         String   @id @default(uuid())
+  languageId String
+  language   Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  slug       String
+  name       String
+  tier       Int // 1 = fundamentos, 2 = intermediário, 3 = avançado
+  order      Int      @default(0) // ordem dentro do tier
+
+  assessmentQuestions AssessmentQuestion[]
+  userSkills          UserSkill[]
+
+  @@unique([languageId, slug])
+  @@map("skills")
+}
+
+model AssessmentQuestion {
+  id         String             @id @default(uuid())
+  languageId String
+  language   Language           @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  skillId    String
+  skill      Skill              @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  type       ExerciseType
+  difficulty ExerciseDifficulty @default(EASY)
+  // order 1 = pergunta de triagem da competência; order 2 = pergunta de
+  // aprofundamento, só aplicada se a de order 1 for respondida incorretamente.
+  order Int
+
+  prompt        String
+  starterCode   String?
+  options       Json?
+  correctAnswer String
+  explanation   String
+
+  answers AssessmentAnswer[]
+
+  @@unique([skillId, order])
+  @@map("assessment_questions")
+}
+
+enum AssessmentStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+model AssessmentAttempt {
+  id         String            @id @default(uuid())
+  userId     String
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languageId String
+  language   Language          @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  status     AssessmentStatus  @default(IN_PROGRESS)
+
+  // Cursor do algoritmo adaptativo: qual skill (por ordem tier/order) e qual
+  // pergunta dentro dela está pendente.
+  cursorSkillIndex    Int     @default(0)
+  cursorQuestionOrder Int     @default(1)
+  stoppedEarly        Boolean @default(false)
+
+  resultLevel   String? // "Iniciante" | "Intermediário" | "Avançado"
+  resultSummary Json? // snapshot persistido do resultado final (idempotência)
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  answers AssessmentAnswer[]
+
+  @@index([userId, languageId, status])
+  @@map("assessment_attempts")
+}
+
+model AssessmentAnswer {
+  id         String             @id @default(uuid())
+  attemptId  String
+  attempt    AssessmentAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId String
+  question   AssessmentQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  skillId    String
+  answer     String
+  isCorrect  Boolean
+  answeredAt DateTime           @default(now())
+
+  @@unique([attemptId, questionId])
+  @@map("assessment_answers")
+}
+
+model UserSkill {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skillId        String
+  skill          Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  masteryPercent Int
+  assessedAt     DateTime @default(now())
+
+  @@unique([userId, skillId])
+  @@map("user_skills")
+}
+
+// ── Fase 4: execução segura de código ─────────────────────────────────
+//
+// O backend só enfileira o job e lê o resultado desta tabela. Quem escreve
+// nela é o serviço `code-runner` (processo separado, sem acesso a nenhuma
+// outra tabela do domínio) — ver code-runner/README.md para a arquitetura
+// de isolamento (containers efêmeros, sem rede, com limites de recurso).
+
+enum CodeExecutionStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+}
+
+enum CodeLanguage {
+  PYTHON
+}
+
+model CodeExecution {
+  id       String              @id @default(uuid())
+  userId   String
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  language CodeLanguage
+  code     String
+  stdin    String?
+
+  status     CodeExecutionStatus @default(QUEUED)
+  stdout     String?
+  stderr     String?
+  exitCode   Int?
+  timedOut   Boolean             @default(false)
+  errorMessage String?
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  @@index([userId])
+  @@map("code_executions")
+}
+
+// ── Fase 5: projetos de portfólio ──────────────────────────────────────
+
+enum ProjectLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum ProjectStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+model Project {
+  id         String       @id @default(uuid())
+  languageId String
+  language   Language     @relation(fields: [languageId], references: [id], onDelete: Cascade)
+  slug       String
+  title      String
+  level      ProjectLevel
+  order      Int          @default(0)
+
+  objective  String
+  problem    String
+  stack      String
+  // Listas guardadas como JSON de strings — conteúdo é dado, não hardcoded na UI.
+  requirements        Json
+  features            Json
+  bonusChallenges      Json?
+  successCriteria     Json
+  suggestedStructure  String
+  suggestedReadme     String
+  futureImprovements  Json?
+
+  createdAt DateTime @default(now())
+
+  progress ProjectProgress[]
+
+  @@unique([languageId, slug])
+  @@map("projects")
+}
+
+model ProjectProgress {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String
+  project     Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status      ProjectStatus @default(NOT_STARTED)
+  // URL informada manualmente pelo usuário (item 16: módulo "preparado" para
+  // GitHub sem exigir OAuth nesta fase — ver docs/ARCHITECTURE.md).
+  repoUrl     String?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@unique([userId, projectId])
+  @@index([userId])
+  @@map("project_progress")
+}
+
+// ── Fase 6: gamificação ─────────────────────────────────────────────────
+
+model Achievement {
+  id          String @id @default(uuid())
+  slug        String @unique
+  name        String
+  description String
+  xpReward    Int    @default(0)
+
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(uuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  earnedAt      DateTime    @default(now())
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}

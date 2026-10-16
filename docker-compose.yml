@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codelearn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codelearn}
+      POSTGRES_DB: ${POSTGRES_DB:-codelearn}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codelearn}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-codelearn}:${POSTGRES_PASSWORD:-codelearn}@postgres:5432/${POSTGRES_DB:-codelearn}
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3333:3333"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
+
+  code-runner:
+    build: ./code-runner
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-codelearn}:${POSTGRES_PASSWORD:-codelearn}@postgres:5432/${POSTGRES_DB:-codelearn}
+      REDIS_URL: redis://redis:6379
+      EXECUTION_TIMEOUT_MS: ${EXECUTION_TIMEOUT_MS:-5000}
+      MEMORY_LIMIT: ${MEMORY_LIMIT:-128m}
+      CPU_LIMIT: ${CPU_LIMIT:-0.5}
+      PIDS_LIMIT: ${PIDS_LIMIT:-64}
+      MAX_OUTPUT_CHARS: ${MAX_OUTPUT_CHARS:-20000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./code-runner:/app
+      - code_runner_node_modules:/app/node_modules
+      # Docker-fora-do-Docker: este worker pede ao daemon do HOST para subir
+      # os containers de execução. Ver code-runner/README.md para o
+      # trade-off de segurança dessa escolha.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:3333
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+
+volumes:
+  postgres_data:
+  backend_node_modules:
+  frontend_node_modules:
+  code_runner_node_modules:

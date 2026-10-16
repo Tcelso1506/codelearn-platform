@@ -1,0 +1,53 @@
+// O code-runner enxerga a MESMA base do backend, mas só modela a tabela que
+// realmente usa (CodeExecution). Isso é proposital: o worker de execução de
+// código não precisa (e não deve) ter acesso de aplicação às outras tabelas
+// do domínio (usuários, exercícios, etc.) — só ao registro da execução que
+// ele mesmo processa.
+//
+// IMPORTANTE: migrations são responsabilidade exclusiva do backend
+// (`backend/prisma/schema.prisma` é a fonte da verdade do schema físico).
+// Este schema nunca deve rodar `prisma migrate` — só `prisma generate`,
+// para ter um client tipado. Se o modelo `CodeExecution` mudar no backend,
+// espelhe a mudança aqui manualmente.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CodeExecutionStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+}
+
+enum CodeLanguage {
+  PYTHON
+}
+
+model CodeExecution {
+  id           String              @id @default(uuid())
+  userId       String
+  language     CodeLanguage
+  code         String
+  stdin        String?
+
+  status       CodeExecutionStatus @default(QUEUED)
+  stdout       String?
+  stderr       String?
+  exitCode     Int?
+  timedOut     Boolean             @default(false)
+  errorMessage String?
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  @@map("code_executions")
+}

@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+/* Estilo mínimo para o conteúdo das aulas (Markdown vindo do banco). */
+.lesson h1 { font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: #0f172a; }
+.lesson h2 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.25rem; }
+.lesson p { margin-bottom: 0.5rem; line-height: 1.6; }
+.lesson ul { list-style: disc; padding-left: 1.25rem; margin-bottom: 0.5rem; }
+.lesson code { background: #f1f5f9; border-radius: 0.25rem; padding: 0.1rem 0.3rem; font-size: 0.85em; }
+.lesson pre { background: #0f172a; color: #f1f5f9; border-radius: 0.5rem; padding: 0.75rem 1rem; overflow-x: auto; margin-bottom: 0.5rem; }
+.lesson pre code { background: transparent; padding: 0; color: inherit; }
